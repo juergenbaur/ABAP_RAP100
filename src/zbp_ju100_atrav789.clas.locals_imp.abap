@@ -17,10 +17,12 @@ CLASS lhc_zr_ju100_atrav789 DEFINITION INHERITING FROM cl_abap_behavior_handler.
       setstatustoopen FOR DETERMINE ON MODIFY
         IMPORTING keys FOR travel~setstatustoopen,
       validatecustomer FOR VALIDATE ON SAVE
-            IMPORTING keys FOR travel~validatecustomer.
+        IMPORTING keys FOR travel~validatecustomer.
 
-          METHODS validatedates FOR VALIDATE ON SAVE
-            IMPORTING keys FOR travel~validatedates.
+    METHODS validatedates FOR VALIDATE ON SAVE
+      IMPORTING keys FOR travel~validatedates.
+    METHODS deductdiscount FOR MODIFY
+      IMPORTING keys FOR ACTION travel~deductdiscount RESULT result.
 ENDCLASS.
 
 CLASS lhc_zr_ju100_atrav789 IMPLEMENTATION.
@@ -99,7 +101,7 @@ CLASS lhc_zr_ju100_atrav789 IMPLEMENTATION.
   METHOD setStatusToOpen.
 
     "Read travel instances of the transferred keys
-    READ ENTITIES OF ZR_JU100_ATRAV789 IN LOCAL MODE
+    READ ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
      ENTITY Travel
        FIELDS ( OverallStatus )
        WITH CORRESPONDING #( keys )
@@ -111,7 +113,7 @@ CLASS lhc_zr_ju100_atrav789 IMPLEMENTATION.
     CHECK travels IS NOT INITIAL.
 
     "else set overall travel status to open ('O')
-    MODIFY ENTITIES OF ZR_JU100_ATRAV789 IN LOCAL MODE
+    MODIFY ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
       ENTITY Travel
         UPDATE SET FIELDS
         WITH VALUE #( FOR travel IN travels ( %tky    = travel-%tky
@@ -128,63 +130,193 @@ CLASS lhc_zr_ju100_atrav789 IMPLEMENTATION.
 * Validation: Check the validity of the entered customer data
 **********************************************************************
   METHOD validateCustomer.
-      "read relevant travel instance data
-      READ ENTITIES OF ZR_JU100_ATRAV789 IN LOCAL MODE
-      ENTITY Travel
-       FIELDS ( CustomerID )
-       WITH CORRESPONDING #( keys )
-      RESULT DATA(travels).
+*
+    "read relevant travel instance data
+    READ ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
+    ENTITY Travel
+     FIELDS ( CustomerID )
+     WITH CORRESPONDING #( keys )
+    RESULT DATA(travels).
 
-      DATA customers TYPE SORTED TABLE OF /dmo/customer WITH UNIQUE KEY customer_id.
+    DATA customers TYPE SORTED TABLE OF /dmo/customer WITH UNIQUE KEY customer_id.
 
-      "optimization of DB select: extract distinct non-initial customer IDs
-      customers = CORRESPONDING #( travels DISCARDING DUPLICATES MAPPING customer_id = customerID EXCEPT * ).
-      DELETE customers WHERE customer_id IS INITIAL.
-      IF customers IS NOT INITIAL.
+    "optimization of DB select: extract distinct non-initial customer IDs
+    customers = CORRESPONDING #( travels DISCARDING DUPLICATES MAPPING customer_id = customerID EXCEPT * ).
+    DELETE customers WHERE customer_id IS INITIAL.
+    IF customers IS NOT INITIAL.
 
-        "check if customer ID exists
-        SELECT FROM /dmo/customer FIELDS customer_id
-                                  FOR ALL ENTRIES IN @customers
-                                  WHERE customer_id = @customers-customer_id
-          INTO TABLE @DATA(valid_customers).
+      "check if customer ID exists
+      SELECT FROM /dmo/customer FIELDS customer_id
+                                FOR ALL ENTRIES IN @customers
+                                WHERE customer_id = @customers-customer_id
+        INTO TABLE @DATA(valid_customers).
+    ENDIF.
+
+    "raise msg for non existing and initial customer id
+    LOOP AT travels INTO DATA(travel).
+
+      APPEND VALUE #(  %tky                 = travel-%tky
+                       %state_area          = 'VALIDATE_CUSTOMER'
+                     ) TO reported-travel.
+
+      IF travel-CustomerID IS  INITIAL.
+        APPEND VALUE #( %tky = travel-%tky ) TO failed-travel.
+
+        APPEND VALUE #( %tky                = travel-%tky
+                        %state_area         = 'VALIDATE_CUSTOMER'
+                        %msg                = NEW /dmo/cm_flight_messages(
+                                                                textid   = /dmo/cm_flight_messages=>enter_customer_id
+                                                                severity = if_abap_behv_message=>severity-error )
+                        %element-CustomerID = if_abap_behv=>mk-on
+                      ) TO reported-travel.
+
+      ELSEIF travel-CustomerID IS NOT INITIAL AND NOT line_exists( valid_customers[ customer_id = travel-CustomerID ] ).
+        APPEND VALUE #(  %tky = travel-%tky ) TO failed-travel.
+
+        APPEND VALUE #(  %tky                = travel-%tky
+                         %state_area         = 'VALIDATE_CUSTOMER'
+                         %msg                = NEW /dmo/cm_flight_messages(
+                                                                customer_id = travel-customerid
+                                                                textid      = /dmo/cm_flight_messages=>customer_unkown
+                                                                severity    = if_abap_behv_message=>severity-error )
+                         %element-CustomerID = if_abap_behv=>mk-on
+                      ) TO reported-travel.
       ENDIF.
 
-      "raise msg for non existing and initial customer id
-      LOOP AT travels INTO DATA(travel).
-
-        APPEND VALUE #(  %tky                 = travel-%tky
-                         %state_area          = 'VALIDATE_CUSTOMER'
-                       ) TO reported-travel.
-
-        IF travel-CustomerID IS  INITIAL.
-          APPEND VALUE #( %tky = travel-%tky ) TO failed-travel.
-
-          APPEND VALUE #( %tky                = travel-%tky
-                          %state_area         = 'VALIDATE_CUSTOMER'
-                          %msg                = NEW /dmo/cm_flight_messages(
-                                                                  textid   = /dmo/cm_flight_messages=>enter_customer_id
-                                                                  severity = if_abap_behv_message=>severity-error )
-                          %element-CustomerID = if_abap_behv=>mk-on
-                        ) TO reported-travel.
-
-        ELSEIF travel-CustomerID IS NOT INITIAL AND NOT line_exists( valid_customers[ customer_id = travel-CustomerID ] ).
-          APPEND VALUE #(  %tky = travel-%tky ) TO failed-travel.
-
-          APPEND VALUE #(  %tky                = travel-%tky
-                           %state_area         = 'VALIDATE_CUSTOMER'
-                           %msg                = NEW /dmo/cm_flight_messages(
-                                                                  customer_id = travel-customerid
-                                                                  textid      = /dmo/cm_flight_messages=>customer_unkown
-                                                                  severity    = if_abap_behv_message=>severity-error )
-                           %element-CustomerID = if_abap_behv=>mk-on
-                        ) TO reported-travel.
-        ENDIF.
-
-      ENDLOOP.
+    ENDLOOP.
   ENDMETHOD.
 
 
+**********************************************************************
+* Validation: Check the validity of begin and end dates
+**********************************************************************
   METHOD validateDates.
+
+    READ ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
+      ENTITY Travel
+        FIELDS (  BeginDate EndDate TravelID )
+        WITH CORRESPONDING #( keys )
+      RESULT DATA(travels).
+
+    LOOP AT travels INTO DATA(travel).
+
+      APPEND VALUE #(  %tky               = travel-%tky
+                       %state_area        = 'VALIDATE_DATES' ) TO reported-travel.
+
+      IF travel-BeginDate IS INITIAL.
+        APPEND VALUE #( %tky = travel-%tky ) TO failed-travel.
+
+        APPEND VALUE #( %tky               = travel-%tky
+                        %state_area        = 'VALIDATE_DATES'
+                         %msg              = NEW /dmo/cm_flight_messages(
+                                                                textid   = /dmo/cm_flight_messages=>enter_begin_date
+                                                                severity = if_abap_behv_message=>severity-error )
+                      %element-BeginDate = if_abap_behv=>mk-on ) TO reported-travel.
+      ENDIF.
+      IF travel-BeginDate < cl_abap_context_info=>get_system_date( ) AND travel-BeginDate IS NOT INITIAL.
+        APPEND VALUE #( %tky               = travel-%tky ) TO failed-travel.
+
+        APPEND VALUE #( %tky               = travel-%tky
+                        %state_area        = 'VALIDATE_DATES'
+                         %msg              = NEW /dmo/cm_flight_messages(
+                                                                begin_date = travel-BeginDate
+                                                                textid     = /dmo/cm_flight_messages=>begin_date_on_or_bef_sysdate
+                                                                severity   = if_abap_behv_message=>severity-error )
+                        %element-BeginDate = if_abap_behv=>mk-on ) TO reported-travel.
+      ENDIF.
+      IF travel-EndDate IS INITIAL.
+        APPEND VALUE #( %tky = travel-%tky ) TO failed-travel.
+
+        APPEND VALUE #( %tky               = travel-%tky
+                        %state_area        = 'VALIDATE_DATES'
+                         %msg                = NEW /dmo/cm_flight_messages(
+                                                                textid   = /dmo/cm_flight_messages=>enter_end_date
+                                                               severity = if_abap_behv_message=>severity-error )
+                        %element-EndDate   = if_abap_behv=>mk-on ) TO reported-travel.
+      ENDIF.
+      IF travel-EndDate < travel-BeginDate AND travel-BeginDate IS NOT INITIAL
+                                           AND travel-EndDate IS NOT INITIAL.
+        APPEND VALUE #( %tky = travel-%tky ) TO failed-travel.
+
+        APPEND VALUE #( %tky               = travel-%tky
+                        %state_area        = 'VALIDATE_DATES'
+                        %msg               = NEW /dmo/cm_flight_messages(
+                                                                textid     = /dmo/cm_flight_messages=>begin_date_bef_end_date
+                                                                begin_date = travel-BeginDate
+                                                                end_date   = travel-EndDate
+                                                                severity   = if_abap_behv_message=>severity-error )
+                        %element-BeginDate = if_abap_behv=>mk-on
+                        %element-EndDate   = if_abap_behv=>mk-on ) TO reported-travel.
+      ENDIF.
+    ENDLOOP.
+
+  ENDMETHOD.
+
+
+  METHOD deductDiscount.
+**************************************************************************
+* Instance-bound non-factory action with parameter `deductDiscount`:
+* Deduct the specified discount from the booking fee (BookingFee)
+**************************************************************************
+    DATA travels_for_update TYPE TABLE FOR UPDATE zr_ju100_atrav789.
+    DATA(keys_with_valid_discount) = keys.
+
+    " check and handle invalid discount values
+    LOOP AT keys_with_valid_discount ASSIGNING FIELD-SYMBOL(<key_with_valid_discount>)
+      WHERE %param-discount_percent IS INITIAL OR %param-discount_percent > 100 OR %param-discount_percent <= 0.
+
+      " report invalid discount value appropriately
+      APPEND VALUE #( %tky                       = <key_with_valid_discount>-%tky ) TO failed-travel.
+
+      APPEND VALUE #( %tky                       = <key_with_valid_discount>-%tky
+                      %msg                       = NEW /dmo/cm_flight_messages(
+                                                        textid = /dmo/cm_flight_messages=>discount_invalid
+                                                        severity = if_abap_behv_message=>severity-error )
+                      %element-TotalPrice        = if_abap_behv=>mk-on
+                      %op-%action-deductDiscount = if_abap_behv=>mk-on
+                    ) TO reported-travel.
+
+      " remove invalid discount value
+      DELETE keys_with_valid_discount.
+    ENDLOOP.
+
+    " check and go ahead with valid discount values
+    CHECK keys_with_valid_discount IS NOT INITIAL.
+
+    " read relevant travel instance data (only booking fee)
+    READ ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
+      ENTITY Travel
+        FIELDS ( BookingFee )
+        WITH CORRESPONDING #( keys_with_valid_discount )
+      RESULT DATA(travels).
+
+    LOOP AT travels ASSIGNING FIELD-SYMBOL(<travel>).
+      DATA percentage TYPE decfloat16.
+      DATA(discount_percent) = keys_with_valid_discount[ KEY draft %tky = <travel>-%tky ]-%param-discount_percent.
+      percentage =  discount_percent / 100 .
+      DATA(reduced_fee) = <travel>-BookingFee * ( 1 - percentage ) .
+
+      APPEND VALUE #( %tky       = <travel>-%tky
+                      BookingFee = reduced_fee
+                    ) TO travels_for_update.
+    ENDLOOP.
+
+    " update data with reduced fee
+    MODIFY ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
+      ENTITY Travel
+        UPDATE FIELDS ( BookingFee )
+        WITH travels_for_update.
+
+    " read changed data for action result
+    READ ENTITIES OF zr_ju100_atrav789 IN LOCAL MODE
+      ENTITY Travel
+        ALL FIELDS WITH
+        CORRESPONDING #( travels )
+      RESULT DATA(travels_with_discount).
+
+    " set action result
+    result = VALUE #( FOR travel IN travels_with_discount ( %tky   = travel-%tky
+                                                            %param = travel ) ).
   ENDMETHOD.
 
 ENDCLASS.

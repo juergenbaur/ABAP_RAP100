@@ -35,19 +35,20 @@ early numbering
 
   determination setStatusToOpen on modify { create; }
 
-validation validateCustomer on save { create; field CustomerID; }
-validation validateDates on save { create; field BeginDate, EndDate; }
+  validation validateCustomer on save { create; field CustomerID; }
+  validation validateDates on save { create; field BeginDate, EndDate; }
 
   draft action Edit;
   draft action Activate optimized;
   draft action Discard;
   draft action Resume;
 
-draft determine action Prepare
-{
-validation validateCustomer;
-validation validateDates;    }
+  draft determine action Prepare
+  {
+    validation validateCustomer;
+    validation validateDates; }
 
+  action deductDiscount parameter /dmo/a_travel_discount result [1] $self;
 
   mapping for zju100_atrav789
     {

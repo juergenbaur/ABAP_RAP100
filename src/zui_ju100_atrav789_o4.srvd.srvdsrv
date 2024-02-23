@@ -1,4 +1,4 @@
 @EndUserText.label: 'Service definition for ZC_JU100_ATRAV789'
 define service ZUI_JU100_ATRAV789_O4 {
-  expose ZC_JU100_ATRAV789;
+  expose ZC_JU100_ATRAV789 as Travel;
 }
